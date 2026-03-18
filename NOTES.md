@@ -410,8 +410,14 @@ result["log_probs"] = token_log_probs.float()
 **当前状态**：
 - [x] eval 脚本 `scripts/eval_zero_shot.py`，支持序列化到 JSON
 - [x] GSM8K test 200 examples 已跑，结果存 `results/zero_shot_baseline_gsm8k_*.json`
+- [x] 三类统计 + ≥10 例分析 → **[`analysis/section3_zero_shot_analysis.md`](analysis/section3_zero_shot_analysis.md)**
 - [ ] ⚠️ `evaluate_vllm` 版本（用 vLLM 加速）尚未实现，当前用 transformers
-- [ ] ⚠️ 三类统计 + ≥10 例分析尚未完成（需写分析文字）
+
+**结果摘要**（r1_zero, 200 examples）：
+- Cat 1（format✓ answer✓）：38 / 200 = **19.0%**
+- Cat 2（format✓ answer✗）：66 / 200 = **33.0%**
+- Cat 3（format✗）：96 / 200 = **48.0%**
+- 核心发现：最大瓶颈是格式不合规（`</think><answer>` 缺空格），SFT 128 样本即可将 format_acc 从 52% 提升至 92%。
 
 **GSM8K 基线结果**（替代 MATH validation set）：
 
@@ -532,20 +538,39 @@ for ei_step in range(n_ei_steps):
 |---------|---------|------|------|
 | `grpo_learning_rate` | LR sweep（≥3 个值） | 曲线 + ≥25% + 2 句 | ⏳ |
 | `grpo_baselines` | `no_baseline` vs `reinforce_with_baseline` | 曲线 + 2 句 | ⏳ |
-| `think_about_length_normalization` | **纯文字**：masked_mean vs masked_normalize 优缺点 | 书面分析 | ⏳ |
+| `think_about_length_normalization` | **纯文字**：masked_mean vs masked_normalize 优缺点 → **[`analysis/section8_length_normalization.md`](analysis/section8_length_normalization.md)** | 书面分析 | ✅ |
 | `grpo_length_normalization` | mean vs normalize 实验对比 | 曲线 + gradient norm 分析 | ⏳ |
 | `grpo_group_standard_deviation` | `use_std=True` vs `False`（Dr. GRPO） | 曲线 + gradient norm 分析 | ⏳ |
-| `grpo_off_policy` | 实现多 epoch off-policy 循环 | 代码 | ⏳ |
-| `grpo_off_policy_sweep` | `epochs_per_batch × train_batch_size` 扫描 | **两张图**：val reward vs steps + vs wall-clock；entropy/length 分析 | ⏳ |
-| `grpo_off_policy_clip_ablation` | GRPO-Clip vs GRPO-No-Clip | 曲线 + entropy/length/grad_norm 分析 | ⏳ |
+| `grpo_off_policy` | 实现多 epoch off-policy 循环 | 代码 | ✅ (`off_policy_steps` 参数，`alignment/training.py`) |
+| `grpo_off_policy_sweep` | `off_policy_steps` 扫描（1/2/4/8） | **两张图**：val reward vs steps + vs wall-clock；entropy/length 分析 | ⏳ |
+| `grpo_off_policy_clip_ablation` | GRPO-Clip vs GRPO-No-Clip（off_policy=4） | 曲线 + entropy/length/grad_norm 分析 | ⏳ |
 | `grpo_prompt_ablation` | `r1_zero` vs `question_only` prompt | 曲线 + 各指标对比 | ⏳ |
 
+**运行所有消融实验**（GPU 空闲后）：
+```bash
+# 全部 9 项（顺序跑，~每项 1h）
+python scripts/grpo_sweep.py --model_path models/sft-gsm8k-full/final --total_steps 200
+
+# 单独跑某项
+python scripts/grpo_sweep.py --experiments grpo_learning_rate grpo_baselines
+
+# 列出所有实验名
+python scripts/grpo_sweep.py --list
+```
+
+**绘图**（任意时刻可运行）：
+```bash
+python scripts/plot_results.py --plot all                   # 所有现有图
+python scripts/plot_results.py --plot sft_size_sweep        # 已生成 → figures/sft_size_sweep.png
+python scripts/plot_results.py --plot grpo_ablation         # 需 results/grpo_sweep_results.json
+python scripts/plot_results.py --plot off_policy_sweep      # 需 models/grpo-sweep/grpo_off_policy_sweep/
+python scripts/plot_results.py --plot grpo_curves --csv models/grpo/metrics.csv
+```
+
 **关键实现细节**：
-- `think_about_length_normalization`（纯文字题）：
-  - masked_mean：除以有效 token 数 → 长短序列 loss 同等权重，但长序列梯度更小
-  - masked_normalize：除以固定常数 → 长序列获得更大梯度，可能不稳定；但 Dr. GRPO 用此防止对短序列过拟合
-- off-policy 实验：需记录 `clip_fraction`，over-optimization 时 clip_fraction 会升高
-- GRPO-No-Clip：去掉 `torch.min(...)` 中的 clipping，直接 `-ratio * adv`
+- `think_about_length_normalization`（纯文字题）：详见 [`analysis/section8_length_normalization.md`](analysis/section8_length_normalization.md)
+- off-policy 实验：`off_policy_steps=N` → 复用 rollout buffer N 次再重新采样；记录 `clip_fraction`
+- GRPO-No-Clip：`loss_type=reinforce_with_baseline`（使用 advantages 但无 IS ratio clipping）
 
 ---
 

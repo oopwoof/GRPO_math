@@ -54,36 +54,44 @@ All core training functions in `tests/adapters.py`:
 - [ ] evaluate_vllm 版本
 - [ ] 三类统计分析文字（各举 ≥10 例）
 
+**Section 3 — Zero-shot 分析**
+- [x] eval 脚本 + 200 examples 已跑
+- [x] 三类统计 + 12例×3类分析 → `analysis/section3_zero_shot_analysis.md`
+
 **Section 4 — SFT**
 - [x] SFT 训练循环（loss/lr/entropy → TensorBoard + CSV）
-- [x] SFT 1k examples, 2 epochs → **70.5% acc** (format_acc=98.5%, r1_zero)
-- [x] Size sweep 完成（128/256/512/1024）→ 61.5% / 63.5% / 67.0% / **72.0%**
-- [x] `scripts/sft_filtered.py` 实现（过滤实验脚本已就绪）
-- [ ] full dataset（~7473 examples）SFT（启动中）
-- [ ] 过滤实验（4.2）：只用答对样本的 SFT，对比等量非过滤
+- [x] SFT 1k examples → **70.5% acc**
+- [x] Size sweep 完成 → 61.5% / 63.5% / 67.0% / **72.0%**（图：`figures/sft_size_sweep.png`）
+- [x] `scripts/sft_filtered.py` 实现
+- [ ] full dataset SFT（⏳ 训练中，step ~660/1868）
+- [ ] 过滤实验（4.2）
 
 **Section 5 — Expert Iteration**
-- [ ] EI 训练循环（需 vLLM rollout）
-- [ ] EI 扫描（G × epochs，n_ei_steps=5）目标 ≥15%
+- [x] `expert_iteration_train()` 实现（`alignment/training.py`）
+- [x] `scripts/train_ei.py` CLI
+- [ ] 实际跑 EI（需 GPU 空闲）
 
 **Section 7 — GRPO 实现**
-- [x] 所有 unit test 函数（adapters.py）通过
-- [x] `grpo_train` 循环实现（`alignment/training.py`）
-  - 记录：loss/lr/grad_norm/token_entropy/mean_reward/clip_fraction/val_reward
-  - TensorBoard + CSV + optional wandb
-  - 支持 off_policy_steps（复用 rollout buffer）
-- [x] `scripts/train_grpo.py` — CLI 入口，支持所有消融参数
+- [x] 所有 unit test 通过
+- [x] `grpo_train()` + off-policy 支持（`alignment/training.py`）
+- [x] `scripts/train_grpo.py` CLI（所有消融参数）
+- [x] `scripts/grpo_sweep.py`（9 项消融自动化，支持 resume）
 
 **Section 8 — GRPO 实验（9 项）**
 - [ ] grpo_learning_rate（LR sweep）
 - [ ] grpo_baselines（no_baseline vs reinforce）
-- [ ] think_about_length_normalization（书面）
-- [ ] grpo_length_normalization（mean vs normalize 实验）
-- [ ] grpo_group_standard_deviation（std=True vs False）
-- [ ] grpo_off_policy（实现 ✓，需跑实验）
-- [ ] grpo_off_policy_sweep（两张图）
-- [ ] grpo_off_policy_clip_ablation
-- [ ] grpo_prompt_ablation
+- [x] think_about_length_normalization → `analysis/section8_length_normalization.md`
+- [ ] grpo_length_normalization（需 GPU）
+- [ ] grpo_group_standard_deviation（需 GPU）
+- [x] grpo_off_policy 代码 ✓（`off_policy_steps` 参数）
+- [ ] grpo_off_policy_sweep（需 GPU）
+- [ ] grpo_off_policy_clip_ablation（需 GPU）
+- [ ] grpo_prompt_ablation（需 GPU）
+
+**绘图**
+- [x] `scripts/plot_results.py`（支持所有 Section 4/8/9 图）
+- [x] `figures/sft_size_sweep.png` ✓
+- [x] `figures/sft_full_training_curve.png`（实时，训练中）
 
 **Section 9 — Leaderboard**
 - [ ] 租 GPU（2×H100） + 完整流程 + val acc vs wall-clock 截图

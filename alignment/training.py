@@ -738,3 +738,232 @@ def load_gsm8k_rl_data(data_path: str) -> list[dict]:
             final_answer = m.group(1).strip().replace(",", "") if m else ex["answer"]
             examples.append({"problem": ex["question"], "answer": final_answer})
     return examples
+
+
+# ── Expert Iteration training loop ────────────────────────────────────────────
+
+def expert_iteration_train(
+    model_path: str,
+    train_examples: list[dict],          # [{"problem": str, "answer": str}]
+    val_examples: list[dict],
+    reward_fn,
+    output_dir: str,
+    # EI hyperparams
+    n_ei_steps: int = 5,                 # number of generate → filter → SFT iterations
+    group_size: int = 8,                 # rollouts per problem per step
+    prompts_per_step: int = 64,          # problems to sample per EI step
+    # SFT hyperparams (for each inner SFT loop)
+    sft_epochs: int = 1,
+    sft_lr: float = 1e-5,
+    sft_grad_accum: int = 8,
+    max_seq_len: int = 512,
+    # Generation
+    temperature: float = 0.7,
+    max_new_tokens: int = 512,
+    rollout_batch_size: int = 4,
+    # Validation
+    num_val: int = 100,
+    # Logging
+    seed: int = 42,
+    wandb_project: str = "grpo-math-ei",
+    wandb_run_name: str | None = None,
+    use_wandb: bool = False,
+) -> str:
+    """Expert Iteration: iteratively generate rollouts → keep correct → SFT.
+
+    Algorithm:
+        current_model = model_path
+        for step in range(n_ei_steps):
+            1. Sample `prompts_per_step` problems from train_examples
+            2. Generate `group_size` rollouts per problem with current_model
+            3. Score all rollouts; keep those with reward=1 (correct)
+            4. If no correct rollouts: skip SFT this step
+            5. SFT current_model on the correct rollouts (sft_epochs epochs)
+            6. Save checkpoint; evaluate on val set
+        return final model path
+    """
+    random.seed(seed)
+    torch.manual_seed(seed)
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # CSV log
+    csv_path = output_dir / "ei_metrics.csv"
+    csv_file = open(csv_path, "w", newline="", encoding="utf-8")
+    csv_writer = csv.writer(csv_file)
+    csv_writer.writerow([
+        "ei_step", "n_rollouts", "n_correct", "pass_rate",
+        "sft_loss_final", "val_reward",
+    ])
+
+    _wandb_run = None
+    if use_wandb:
+        try:
+            import wandb
+            _wandb_run = wandb.init(
+                project=wandb_project, name=wandb_run_name,
+                config=dict(
+                    model_path=model_path, n_ei_steps=n_ei_steps,
+                    group_size=group_size, prompts_per_step=prompts_per_step,
+                    sft_epochs=sft_epochs, sft_lr=sft_lr, temperature=temperature,
+                ),
+            )
+        except Exception as e:
+            print(f"[EI] wandb init failed ({e}), continuing without it.")
+
+    print(f"[EI] Loading model from {model_path} on {device} ...")
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
+    ).to(device)
+
+    train_pool = list(train_examples)
+    current_model_path = model_path
+
+    for ei_step in range(1, n_ei_steps + 1):
+        print(f"\n{'='*60}")
+        print(f"[EI] Step {ei_step}/{n_ei_steps}")
+        print(f"{'='*60}")
+
+        # --- Sample problems ---
+        random.shuffle(train_pool)
+        batch_problems = train_pool[:prompts_per_step]
+        prompts = [R1_ZERO_PROMPT.format(question=ex["problem"]) for ex in batch_problems]
+        ground_truths = [ex["answer"] for ex in batch_problems]
+
+        # --- Generate rollouts ---
+        print(f"[EI] Generating {prompts_per_step * group_size} rollouts...")
+        rollout_responses, _ = generate_rollouts(
+            model, tokenizer, prompts,
+            group_size=group_size,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            batch_size=rollout_batch_size,
+            device=device,
+        )
+        repeated_gts = [gt for gt in ground_truths for _ in range(group_size)]
+
+        # --- Filter correct rollouts ---
+        correct_sft_examples = []
+        for resp, gt, prob in zip(
+            rollout_responses, repeated_gts,
+            [p for p in batch_problems for _ in range(group_size)]
+        ):
+            scores = reward_fn(resp, gt)
+            if scores["reward"] == 1.0:
+                # Build SFT example: prompt ends with "<think>", response = rest
+                response_text = resp[len("<think>"):]  # strip the prepended <think>
+                correct_sft_examples.append({
+                    "prompt": R1_ZERO_PROMPT.format(question=prob["problem"]),
+                    "response": response_text,
+                })
+
+        n_rollouts = len(rollout_responses)
+        n_correct = len(correct_sft_examples)
+        pass_rate = n_correct / n_rollouts
+        print(f"[EI] Correct rollouts: {n_correct}/{n_rollouts} = {pass_rate:.1%}")
+
+        # --- Validation before SFT ---
+        val_metrics = grpo_quick_val(
+            model, tokenizer, val_examples, reward_fn,
+            device=device, num_val=num_val,
+        )
+        val_reward = val_metrics["val_reward"]
+        print(f"[EI] Val reward before SFT: {val_reward:.1%}")
+        model.train()
+
+        # --- SFT on correct rollouts (skip if none) ---
+        sft_loss_final = float("nan")
+        if n_correct == 0:
+            print(f"[EI] No correct rollouts — skipping SFT this step.")
+        else:
+            # Quick in-place SFT (no save, just update model weights)
+            optimizer = Adafactor(
+                model.parameters(), lr=sft_lr,
+                scale_parameter=False, relative_step=False, warmup_init=False,
+            )
+            model.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": False}
+            )
+            model.train()
+
+            for sft_epoch in range(sft_epochs):
+                random.shuffle(correct_sft_examples)
+                pbar = tqdm(correct_sft_examples, desc=f"  EI-SFT ep{sft_epoch+1}", leave=False)
+                step_count = 0
+                for ex in pbar:
+                    tokens = run_tokenize_prompt_and_output(
+                        [ex["prompt"]], [ex["response"]], tokenizer
+                    )
+                    inp = tokens["input_ids"][:, :max_seq_len].to(device)
+                    lbl = tokens["labels"][:, :max_seq_len].to(device)
+                    mask = tokens["response_mask"][:, :max_seq_len].to(device)
+                    if mask.sum() == 0:
+                        continue
+                    with torch.autocast(device_type=device, dtype=torch.bfloat16,
+                                        enabled=(device == "cuda")):
+                        result = run_get_response_log_probs(
+                            model, inp, lbl, return_token_entropy=False
+                        )
+                    loss, _ = run_sft_microbatch_train_step(
+                        result["log_probs"], mask, sft_grad_accum
+                    )
+                    sft_loss_final = loss.item() * sft_grad_accum
+                    step_count += 1
+                    if step_count % sft_grad_accum == 0:
+                        clip_grad_norm_(model.parameters(), 1.0)
+                        optimizer.step()
+                        optimizer.zero_grad()
+
+                # Final optimizer step for remaining microbatches
+                if step_count % sft_grad_accum != 0:
+                    clip_grad_norm_(model.parameters(), 1.0)
+                    optimizer.step()
+                    optimizer.zero_grad()
+
+            print(f"[EI] SFT done. Final loss: {sft_loss_final:.4f}")
+
+        # --- Save checkpoint ---
+        ckpt_dir = output_dir / f"ei-step-{ei_step}"
+        model.save_pretrained(ckpt_dir)
+        tokenizer.save_pretrained(ckpt_dir)
+        current_model_path = str(ckpt_dir)
+        print(f"[EI] Checkpoint saved → {ckpt_dir}")
+
+        # --- Post-SFT validation ---
+        val_metrics_after = grpo_quick_val(
+            model, tokenizer, val_examples, reward_fn,
+            device=device, num_val=num_val,
+        )
+        val_reward_after = val_metrics_after["val_reward"]
+        print(f"[EI] Val reward after SFT: {val_reward_after:.1%}")
+        model.train()
+
+        csv_writer.writerow([
+            ei_step, n_rollouts, n_correct, f"{pass_rate:.4f}",
+            f"{sft_loss_final:.6f}" if not torch.isnan(torch.tensor(sft_loss_final)) else "",
+            f"{val_reward_after:.4f}",
+        ])
+        csv_file.flush()
+
+        if _wandb_run:
+            _wandb_run.log({
+                "ei/pass_rate": pass_rate,
+                "ei/n_correct": n_correct,
+                "ei/val_reward": val_reward_after,
+            }, step=ei_step)
+
+    # --- Save final ---
+    final_dir = output_dir / "final"
+    model.save_pretrained(final_dir)
+    tokenizer.save_pretrained(final_dir)
+    csv_file.close()
+    if _wandb_run:
+        _wandb_run.finish()
+
+    print(f"\n[EI] Done. Final model → {final_dir}")
+    print(f"[EI] Metrics CSV → {csv_path}")
+    return str(final_dir)
