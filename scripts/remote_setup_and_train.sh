@@ -39,7 +39,8 @@ pip install -q \
     accelerate \
     safetensors \
     datasets \
-    huggingface_hub
+    huggingface_hub \
+    tensorboard
 
 pip install -q -e . --no-deps
 echo "[1/4] Done."
