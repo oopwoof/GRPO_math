@@ -10,6 +10,7 @@
 | 2026-03-17 | SFT v1 | 1k examples, 2 epochs, lr=1e-5 | 0.0% | Bug: `</think><answer>` missing space, all format checks fail |
 | 2026-03-17 | SFT v2 | 1k examples, 2 epochs, lr=1e-5 | **70.5%** | Fixed format bug; format_acc=98.5%, answer_acc=70.5% (r1_zero) |
 | 2026-03-17 | SFT size sweep | 128–1024, 2 epochs, lr=1e-5, r1_zero | 61.5%→72.0% | format_acc 92%→99%; log-linear data scaling |
+| 2026-03-18 | SFT full dataset | 7473 examples, 2 epochs, lr=1e-5, r1_zero | **73.0%** | format_acc ~99.5%; full dataset scaling confirmed |
 
 ---
 
@@ -63,8 +64,8 @@ All core training functions in `tests/adapters.py`:
 - [x] SFT 1k examples → **70.5% acc**
 - [x] Size sweep 完成 → 61.5% / 63.5% / 67.0% / **72.0%**（图：`figures/sft_size_sweep.png`）
 - [x] `scripts/sft_filtered.py` 实现
-- [ ] full dataset SFT（⏳ 训练中，step ~660/1868）
-- [ ] 过滤实验（4.2）
+- [x] full dataset SFT 完成 → **73.0%** (7473 examples, 2 epochs)
+- [ ] 过滤实验（4.2）⏳ 运行中（1000 base dataset，对比 filtered vs unfiltered）
 
 **Section 5 — Expert Iteration**
 - [x] `expert_iteration_train()` 实现（`alignment/training.py`）
