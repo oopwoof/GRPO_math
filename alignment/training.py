@@ -525,6 +525,7 @@ def grpo_train(
             # Generate new rollouts — disable grad-ckpt so KV cache works
             model.gradient_checkpointing_disable()
             model.config.use_cache = True
+            model.config.gradient_checkpointing = False
             model.eval()
             with torch.inference_mode():
                 rollout_responses, _ = generate_rollouts(
@@ -667,6 +668,7 @@ def grpo_train(
         if step % val_every_n_steps == 0:
             model.gradient_checkpointing_disable()
             model.config.use_cache = True
+            model.config.gradient_checkpointing = False
             val_metrics = grpo_quick_val(
                 model, tokenizer, val_examples, reward_fn,
                 device=device, num_val=num_val,
