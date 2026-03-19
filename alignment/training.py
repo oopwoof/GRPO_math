@@ -310,19 +310,27 @@ def generate_rollouts(
     model.eval()
     tokenizer.padding_side = "left"
 
+    # Ensure pad_token is set (Qwen2.5 may not set it by default)
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
     for i in range(0, len(expanded_prompts), batch_size):
         batch = expanded_prompts[i: i + batch_size]
         inputs = tokenizer(
             batch, return_tensors="pt", padding=True,
             truncation=True, max_length=512,
         ).to(device)
-        # gradient_checkpointing sets use_cache=False on the config, but
-        # model.generate() in transformers>=4.51 mishandles the attention mask
-        # when use_cache=False. Temporarily re-enable it for inference only.
+        if inputs["input_ids"].shape[1] == 0:
+            raise ValueError(
+                f"Tokenizer produced empty sequences (shape={inputs['input_ids'].shape}). "
+                f"First prompt (truncated): {batch[0][:200]!r}"
+            )
+        # gradient_checkpointing sets use_cache=False; restore for generation
         _prev_use_cache = model.config.use_cache
         model.config.use_cache = True
         outputs = model.generate(
-            **inputs,
+            input_ids=inputs["input_ids"],
+            attention_mask=inputs["attention_mask"],
             max_new_tokens=max_new_tokens,
             do_sample=(temperature > 0),
             temperature=temperature if temperature > 0 else 1.0,
@@ -357,6 +365,9 @@ def grpo_quick_val(
     model.eval()
     tokenizer.padding_side = "left"
 
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
     all_responses = []
     for i in range(0, len(prompts), batch_size):
         batch = prompts[i: i + batch_size]
@@ -365,7 +376,9 @@ def grpo_quick_val(
         _prev_use_cache = model.config.use_cache
         model.config.use_cache = True
         outputs = model.generate(
-            **inputs, max_new_tokens=max_new_tokens, do_sample=False,
+            input_ids=inputs["input_ids"],
+            attention_mask=inputs["attention_mask"],
+            max_new_tokens=max_new_tokens, do_sample=False,
             pad_token_id=tokenizer.pad_token_id, eos_token_id=tokenizer.eos_token_id,
         )
         model.config.use_cache = _prev_use_cache
@@ -529,6 +542,7 @@ def grpo_train(
                     device=device,
                 )
             model.train()
+            torch.cuda.empty_cache()
 
             # Compute group-normalized rewards
             repeated_gts = [gt for gt in ground_truths for _ in range(group_size)]
@@ -560,14 +574,23 @@ def grpo_train(
             lbl_ids = tokens["labels"][:, :max_seq_len].to(device)
             resp_mask = tokens["response_mask"][:, :max_seq_len].to(device)
 
-            # Get old log probs with no grad
+            # Get old log probs with no grad (micro-batched to avoid OOM)
             model.eval()
+            old_lp_chunks = []
+            micro_bs = max(1, train_batch_size * 2)  # small batches for log-prob
             with torch.no_grad():
-                with torch.autocast(device_type=device, dtype=torch.bfloat16, enabled=(device == "cuda")):
-                    old_result = run_get_response_log_probs(
-                        model, inp_ids, lbl_ids, return_token_entropy=False
-                    )
-            old_log_probs_buf = old_result["log_probs"].detach()  # (N, seq)
+                for mb_start in range(0, inp_ids.shape[0], micro_bs):
+                    mb_end = mb_start + micro_bs
+                    with torch.autocast(device_type=device, dtype=torch.bfloat16, enabled=(device == "cuda")):
+                        mb_result = run_get_response_log_probs(
+                            model, inp_ids[mb_start:mb_end],
+                            lbl_ids[mb_start:mb_end],
+                            return_token_entropy=False,
+                        )
+                    old_lp_chunks.append(mb_result["log_probs"].detach().cpu())
+                    del mb_result
+            old_log_probs_buf = torch.cat(old_lp_chunks, dim=0).to(device)  # (N, seq)
+            del old_lp_chunks
             model.train()
 
             rollout_buffer = {
