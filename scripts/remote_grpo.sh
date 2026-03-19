@@ -3,17 +3,18 @@
 # Remote GRPO ablation sweep (Section 8)
 #
 # Usage:
-#   bash scripts/remote_grpo.sh <RUNPOD_API_KEY> [POD_ID] [EXPERIMENTS...]
+#   bash scripts/remote_grpo.sh <RUNPOD_API_KEY> <POD_ID> <POD_LABEL> [EXPERIMENTS...]
+#
+# POD_LABEL is used to write a pod-specific results file so that multiple pods
+# sharing the same Network Volume do not overwrite each other's results.
+# Results land in: results/grpo_sweep_results_<POD_LABEL>.json
 #
 # Examples:
-#   # Run all experiments, auto-stop pod when done
-#   bash scripts/remote_grpo.sh abc123key wdc6riqt8acr19
-#
-#   # Run only baselines ablation
-#   bash scripts/remote_grpo.sh abc123key wdc6riqt8acr19 grpo_baselines
+#   # Pod A: LR sweep + baselines, auto-stop when done
+#   bash scripts/remote_grpo.sh abc123key wdc6riqt8acr19 pod_a grpo_learning_rate grpo_baselines
 #
 #   # Run without auto-stop (leave pod running)
-#   bash scripts/remote_grpo.sh "" "" grpo_baselines
+#   bash scripts/remote_grpo.sh "" "" pod_a grpo_baselines
 #
 # Available experiments:
 #   grpo_learning_rate           LR sweep (4 runs)
@@ -28,7 +29,8 @@ set -e
 
 RUNPOD_API_KEY="${1:-}"
 POD_ID="${2:-}"
-shift 2 2>/dev/null || true
+POD_LABEL="${3:-pod_a}"
+shift 3 2>/dev/null || true
 EXPERIMENTS=("$@")   # remaining args = experiment names; empty = all
 
 WORKDIR="/workspace/GRPO_math"
@@ -84,7 +86,7 @@ fi
 WANDB_MODE=disabled python scripts/grpo_sweep.py \
     --model_path "$MODEL_PATH" \
     --output_dir models/grpo-sweep \
-    --results_path results/grpo_sweep_results.json \
+    --results_path "results/grpo_sweep_results_${POD_LABEL}.json" \
     --total_steps 200 \
     --num_val 200 \
     $EXP_ARGS
@@ -92,7 +94,7 @@ WANDB_MODE=disabled python scripts/grpo_sweep.py \
 echo ""
 echo "=============================="
 echo "  GRPO sweep complete!"
-echo "  Results: $WORKDIR/results/grpo_sweep_results.json"
+echo "  Results: $WORKDIR/results/grpo_sweep_results_${POD_LABEL}.json"
 echo "=============================="
 
 # ---------- Auto-stop pod ----------
