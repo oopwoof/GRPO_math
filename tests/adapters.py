@@ -89,9 +89,13 @@ def run_compute_group_normalized_rewards(
 
     # Score all responses
     raw_rewards_list = []
+    format_rewards_list = []
+    answer_rewards_list = []
     for response, gt in zip(rollout_responses, repeated_ground_truths):
         reward_dict = reward_fn(response, gt)
         raw_rewards_list.append(reward_dict["reward"])
+        format_rewards_list.append(reward_dict.get("format_reward", float("nan")))
+        answer_rewards_list.append(reward_dict.get("answer_reward", float("nan")))
 
     raw_rewards = torch.tensor(raw_rewards_list, dtype=torch.float32)
     advantages = torch.zeros_like(raw_rewards)
@@ -111,6 +115,8 @@ def run_compute_group_normalized_rewards(
 
     metadata = {
         "mean_reward": raw_rewards.mean().item(),
+        "mean_format_reward": sum(format_rewards_list) / len(format_rewards_list),
+        "mean_answer_reward": sum(answer_rewards_list) / len(answer_rewards_list),
     }
 
     return advantages, raw_rewards, metadata

@@ -444,7 +444,8 @@ def grpo_train(
     csv_writer = csv.writer(csv_file)
     csv_writer.writerow([
         "step", "loss", "lr", "grad_norm", "token_entropy",
-        "mean_reward", "clip_fraction", "val_reward",
+        "mean_reward", "format_reward", "answer_reward",
+        "clip_fraction", "val_reward",
     ])
 
     _wandb_run = None
@@ -680,6 +681,8 @@ def grpo_train(
         avg_clip = total_clip_frac / max(n_microbatches, 1)
         avg_entropy = total_entropy / max(n_microbatches, 1)
         mean_reward = reward_meta["mean_reward"]
+        mean_format = reward_meta.get("mean_format_reward", float("nan"))
+        mean_answer = reward_meta.get("mean_answer_reward", float("nan"))
         lr_now = optimizer.param_groups[0]["lr"]
 
         running["loss"] += avg_loss
@@ -702,6 +705,8 @@ def grpo_train(
             tb_writer.add_scalar("train/grad_norm", grad_norm, step)
             tb_writer.add_scalar("train/token_entropy", running["entropy"] / c, step)
             tb_writer.add_scalar("train/mean_reward", running["reward"] / c, step)
+            tb_writer.add_scalar("train/format_reward", mean_format, step)
+            tb_writer.add_scalar("train/answer_reward", mean_answer, step)
             tb_writer.add_scalar("train/clip_fraction", running["clip_frac"] / c, step)
             if not torch.isnan(torch.tensor(val_reward)):
                 tb_writer.add_scalar("val/reward", val_reward, step)
@@ -713,6 +718,8 @@ def grpo_train(
                 f"{grad_norm:.4f}",
                 f"{running['entropy'] / c:.4f}",
                 f"{running['reward'] / c:.4f}",
+                f"{mean_format:.4f}",
+                f"{mean_answer:.4f}",
                 f"{running['clip_frac'] / c:.4f}",
                 f"{val_reward:.4f}" if not torch.isnan(torch.tensor(val_reward)) else "",
             ])
