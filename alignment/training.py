@@ -309,8 +309,6 @@ def generate_rollouts(
     all_responses = []
     model.eval()
     tokenizer.padding_side = "left"
-
-    # Ensure pad_token is set (Qwen2.5 may not set it by default)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -325,9 +323,6 @@ def generate_rollouts(
                 f"Tokenizer produced empty sequences (shape={inputs['input_ids'].shape}). "
                 f"First prompt (truncated): {batch[0][:200]!r}"
             )
-        # gradient_checkpointing sets use_cache=False; restore for generation
-        _prev_use_cache = model.config.use_cache
-        model.config.use_cache = True
         outputs = model.generate(
             input_ids=inputs["input_ids"],
             attention_mask=inputs["attention_mask"],
@@ -337,7 +332,6 @@ def generate_rollouts(
             pad_token_id=tokenizer.pad_token_id,
             eos_token_id=tokenizer.eos_token_id,
         )
-        model.config.use_cache = _prev_use_cache
         new_tokens = outputs[:, inputs["input_ids"].shape[1]:]
         all_responses.extend(tokenizer.batch_decode(new_tokens, skip_special_tokens=True))
 
@@ -373,15 +367,12 @@ def grpo_quick_val(
         batch = prompts[i: i + batch_size]
         inputs = tokenizer(batch, return_tensors="pt", padding=True,
                            truncation=True, max_length=512).to(device)
-        _prev_use_cache = model.config.use_cache
-        model.config.use_cache = True
         outputs = model.generate(
             input_ids=inputs["input_ids"],
             attention_mask=inputs["attention_mask"],
             max_new_tokens=max_new_tokens, do_sample=False,
             pad_token_id=tokenizer.pad_token_id, eos_token_id=tokenizer.eos_token_id,
         )
-        model.config.use_cache = _prev_use_cache
         new_tokens = outputs[:, inputs["input_ids"].shape[1]:]
         all_responses.extend(tokenizer.batch_decode(new_tokens, skip_special_tokens=True))
 
@@ -530,7 +521,8 @@ def grpo_train(
 
         # --- Rollout generation (possibly off-policy) ---
         if rollout_buffer is None or buffer_uses >= off_policy_steps:
-            # Generate new rollouts
+            # Generate new rollouts — disable grad-ckpt so KV cache works
+            model.gradient_checkpointing_disable()
             model.eval()
             with torch.inference_mode():
                 rollout_responses, _ = generate_rollouts(
@@ -541,6 +533,9 @@ def grpo_train(
                     batch_size=rollout_batch_size,
                     device=device,
                 )
+            model.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": False}
+            )
             model.train()
             torch.cuda.empty_cache()
 
@@ -577,7 +572,7 @@ def grpo_train(
             # Get old log probs with no grad (micro-batched to avoid OOM)
             model.eval()
             old_lp_chunks = []
-            micro_bs = max(1, train_batch_size * 2)  # small batches for log-prob
+            micro_bs = max(1, train_batch_size * 4)  # micro-batch for log-prob
             with torch.no_grad():
                 for mb_start in range(0, inp_ids.shape[0], micro_bs):
                     mb_end = mb_start + micro_bs
@@ -668,12 +663,17 @@ def grpo_train(
         # --- Validation ---
         val_reward = float("nan")
         if step % val_every_n_steps == 0:
+            model.gradient_checkpointing_disable()
             val_metrics = grpo_quick_val(
                 model, tokenizer, val_examples, reward_fn,
                 device=device, num_val=num_val,
             )
             val_reward = val_metrics["val_reward"]
+            model.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": False}
+            )
             model.train()
+            torch.cuda.empty_cache()
 
         # --- Logging ---
         avg_loss = total_loss / max(n_microbatches, 1)
