@@ -316,6 +316,11 @@ def generate_rollouts(
             batch, return_tensors="pt", padding=True,
             truncation=True, max_length=512,
         ).to(device)
+        # gradient_checkpointing sets use_cache=False on the config, but
+        # model.generate() in transformers>=4.51 mishandles the attention mask
+        # when use_cache=False. Temporarily re-enable it for inference only.
+        _prev_use_cache = model.config.use_cache
+        model.config.use_cache = True
         outputs = model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
@@ -324,6 +329,7 @@ def generate_rollouts(
             pad_token_id=tokenizer.pad_token_id,
             eos_token_id=tokenizer.eos_token_id,
         )
+        model.config.use_cache = _prev_use_cache
         new_tokens = outputs[:, inputs["input_ids"].shape[1]:]
         all_responses.extend(tokenizer.batch_decode(new_tokens, skip_special_tokens=True))
 
@@ -356,10 +362,13 @@ def grpo_quick_val(
         batch = prompts[i: i + batch_size]
         inputs = tokenizer(batch, return_tensors="pt", padding=True,
                            truncation=True, max_length=512).to(device)
+        _prev_use_cache = model.config.use_cache
+        model.config.use_cache = True
         outputs = model.generate(
             **inputs, max_new_tokens=max_new_tokens, do_sample=False,
             pad_token_id=tokenizer.pad_token_id, eos_token_id=tokenizer.eos_token_id,
         )
+        model.config.use_cache = _prev_use_cache
         new_tokens = outputs[:, inputs["input_ids"].shape[1]:]
         all_responses.extend(tokenizer.batch_decode(new_tokens, skip_special_tokens=True))
 
