@@ -475,7 +475,7 @@ def grpo_train(
         torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
     ).to(device)
 
-    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+    # No gradient checkpointing — 32GB VRAM is sufficient for 1.5B + bs=1
     model.train()
 
     optimizer = Adafactor(
@@ -522,10 +522,7 @@ def grpo_train(
 
         # --- Rollout generation (possibly off-policy) ---
         if rollout_buffer is None or buffer_uses >= off_policy_steps:
-            # Generate new rollouts — disable grad-ckpt so KV cache works
-            model.gradient_checkpointing_disable()
-            model.config.use_cache = True
-            model.config.gradient_checkpointing = False
+            # Generate new rollouts
             model.eval()
             with torch.inference_mode():
                 rollout_responses, _ = generate_rollouts(
@@ -536,9 +533,6 @@ def grpo_train(
                     batch_size=rollout_batch_size,
                     device=device,
                 )
-            model.gradient_checkpointing_enable(
-                gradient_checkpointing_kwargs={"use_reentrant": False}
-            )
             model.train()
             torch.cuda.empty_cache()
 
@@ -666,17 +660,11 @@ def grpo_train(
         # --- Validation ---
         val_reward = float("nan")
         if step % val_every_n_steps == 0:
-            model.gradient_checkpointing_disable()
-            model.config.use_cache = True
-            model.config.gradient_checkpointing = False
             val_metrics = grpo_quick_val(
                 model, tokenizer, val_examples, reward_fn,
                 device=device, num_val=num_val,
             )
             val_reward = val_metrics["val_reward"]
-            model.gradient_checkpointing_enable(
-                gradient_checkpointing_kwargs={"use_reentrant": False}
-            )
             model.train()
             torch.cuda.empty_cache()
 
