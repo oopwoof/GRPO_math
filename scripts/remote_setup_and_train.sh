@@ -40,7 +40,8 @@ pip install -q \
     safetensors \
     datasets \
     huggingface_hub \
-    tensorboard
+    tensorboard \
+    latex2sympy2_extended
 
 pip install -q -e . --no-deps
 echo "[1/4] Done."
